@@ -4,7 +4,6 @@
 # mfsBSD ZFS install script
 # Copyright (c) 2011 Martin Matuska <mm at FreeBSD.org>
 #
-FS_LIST="var tmp"
 
 usage() {
 	echo "Usage: $0 [-h] -d geom_provider [-d geom_provider ...] -t archive_file [-r mirror|raidz] [-m mount_point] [-p zfs_pool_name] [-V zfs_pool_version] [-s swap_partition_size] [-z zfs_partition_size] [-c] [-l] [-4]"
@@ -23,9 +22,6 @@ help() {
 	echo "-p pool_name      : specify a name for the ZFS pool (default: tank)"
 	echo "-V pool_version   : specify a version number for ZFS pool (default: 13)"
 	echo "-m mount_point    : use this mount point for operations (default: /mnt)"
-	echo "-c		: enable lzjb compression for all datasets"
-	echo "-l 		: use legacy mounts (via fstab) instead of ZFS mounts"
-	echo "-4		: use fletcher4 as default checksum algorithm"
 	echo; echo "Examples:"
 	echo "Install on a single drive with 2GB swap:"
 	echo "$0 -d ad4 -s 2G"
@@ -47,9 +43,6 @@ while getopts d:t:r:p:s:z:m:V:hcl4 o; do
 		r) RAID="${OPTARG}" ;;
 		z) ZPART="${OPTARG}" ;;
 		V) VERSION="${OPTARG}" ;;
-		c) LZJB=1 ;;
-		l) LEGACY=1 ;;
-		4) FLETCHER=1 ;;
 		h) help; exit 1;;
 		[?]) usage; exit 1;;
 esac
@@ -175,13 +168,7 @@ if [ -n "${ZPART}" ]; then
 	SZPART="-s ${ZPART}"
 fi
 
-if [ "${LEGACY}" = "1" ]; then
-	ALTROOT=
-	ROOTMNT=legacy
-else
-	ALTROOT="-o altroot=${MNT} -o cachefile=/boot/zfs/zpool.cache"
-	ROOTMNT=/
-fi
+ALTROOT="-o altroot=${MNT} -o cachefile=/boot/zfs/zpool.cache"
 
 # Create GPT
 
@@ -196,12 +183,12 @@ for DEV in ${DEVS}; do
 		echo " error"
 		exit 1
 	fi
-	if ! /sbin/gpart add -t freebsd-boot -s 128 ${DEV} > /dev/null; then
+	if ! /sbin/gpart add -t freebsd-boot -s 222 -a 4k ${DEV} > /dev/null; then
 		echo " error"
 		exit 1
 	fi
 	if [ -n "${SWAP}" ]; then
-		if ! /sbin/gpart add -t freebsd-swap -s "${SWAP}" ${DEV} > /dev/null; then
+		if ! /sbin/gpart add -t freebsd-swap -s "${SWAP}" -a 4k ${DEV} > /dev/null; then
 			echo " error"
 			exit 1
 		fi
@@ -213,7 +200,7 @@ for DEV in ${DEVS}; do
 			FSWAP=${SWAPPART}
 		fi
 	fi
-	if ! /sbin/gpart add -t freebsd-zfs ${SZPART} ${DEV} > /dev/null; then
+	if ! /sbin/gpart add -t freebsd-zfs -a 4k ${SZPART} ${DEV} > /dev/null; then
 		echo " error"
 		exit 1
 	fi
@@ -249,75 +236,115 @@ for DEV in ${DEVS}; do
 done
 
 echo -n "Creating ZFS pool ${POOL} on${PARTS} ..."
-if ! /sbin/zpool create -f -m none ${ALTROOT} ${VERSION} ${POOL} ${RAID} ${PARTS} > /dev/null 2> /dev/null; then
+if ! /sbin/zpool create -f -O canmount=off -m none ${ALTROOT} ${VERSION} ${POOL} ${RAID} ${PARTS} > /dev/null 2> /dev/null; then
 	echo " error"
 	exit 1
 fi
 echo " done"
 
-if [ "${FLETCHER}" = "1" ]; then
-	echo -n "Setting default checksum to fletcher4 for ${POOL} ..."
-	if ! /sbin/zfs set checksum=fletcher4 ${POOL} > /dev/null 2> /dev/null; then
-		echo " error"
-		exit 1
-	fi
-	echo " done"
+echo -n "Setting default checksum to fletcher4 for ${POOL} ..."
+if ! /sbin/zfs set checksum=fletcher4 ${POOL} > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
 fi
+echo " done"
 
-if [ "${LZJB}" = "1" ]; then
-	echo -n "Setting default compression to lzjb for ${POOL} ..."
-	if ! /sbin/zfs set compression=lzjb ${POOL} > /dev/null 2> /dev/null; then
-		echo " error"
-		exit 1
-	fi
-	echo " done"
+echo -n "Turning atime off for ${POOL} ..."
+if ! /sbin/zfs set atime=off ${POOL} > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
 fi
+echo " done"
 
-echo -n "Creating ${POOL} root partition:"
-if ! /sbin/zfs create -o mountpoint=${ROOTMNT} ${POOL}/root > /dev/null 2> /dev/null; then
+echo -n "Creating ${POOL} partitions:"
+if ! /sbin/zfs create -o mountpoint=none                                                ${POOL}/ROOT > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create -o mountpoint=/                                                   ${POOL}/ROOT/default > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create -o mountpoint=/tmp        -o compression=lzjb -o setuid=off       ${POOL}/tmp > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create -o mountpoint=/usr                                                ${POOL}/usr > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create                                                                   ${POOL}/usr/local > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create -o mountpoint=/home                           -o setuid=off       ${POOL}/home > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create -o compression=lzjb                           -o setuid=off       ${POOL}/usr/ports > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create -o compression=off    -o exec=off             -o setuid=off       ${POOL}/usr/ports/distfiles > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create -o compression=off    -o exec=off             -o setuid=off       ${POOL}/usr/ports/packages > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create -o compression=lzjb   -o exec=off             -o setuid=off       ${POOL}/usr/src > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create                                                                   ${POOL}/usr/obj > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create -o mountpoint=/var                                                ${POOL}/var > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create -o compression=lzjb   -o exec=off             -o setuid=off       ${POOL}/var/crash > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create                       -o exec=off             -o setuid=off       ${POOL}/var/db > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create -o compression=lzjb   -o exec=on              -o setuid=off       ${POOL}/var/db/pkg > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create                       -o exec=off             -o setuid=off       ${POOL}/var/empty > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create -o compression=lzjb   -o exec=off             -o setuid=off       ${POOL}/var/log > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create -o compression=gzip   -o exec=off             -o setuid=off       ${POOL}/var/mail > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create                       -o exec=off             -o setuid=off       ${POOL}/var/run > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+if ! /sbin/zfs create -o compression=lzjb   -o exec=on              -o setuid=off       ${POOL}/var/tmp > /dev/null 2> /dev/null; then
 	echo " error"
 	exit 1
 fi
 echo " ... done"
-echo -n "Creating ${POOL} partitions:"
-for FS in ${FS_LIST}; do
-	if [ "${LEGACY}" = 1 ]; then
-		MNTPT="-o mountpoint=legacy"
-	else
-		MNTPT=
-	fi
-	if ! /sbin/zfs create ${MNTPT} ${POOL}/root/${FS} > /dev/null 2> /dev/null; then
-		echo " error"
-		exit 1
-	fi
-	echo -n " ${FS}"
-done
-echo " ... done"
-echo -n "Setting bootfs for ${POOL} to ${POOL}/root ..."
-if ! /sbin/zpool set bootfs=${POOL}/root ${POOL} > /dev/null 2> /dev/null; then
+echo -n "Setting bootfs for ${POOL} to ${POOL}/ROOT/default ..."
+if ! /sbin/zpool set bootfs=${POOL}/ROOT/default ${POOL} > /dev/null 2> /dev/null; then
 	echo " error"
 	exit 1
 fi
 echo " done"
 /sbin/zfs list -r ${POOL}
-
-# Mount and populate zfs (if legacy)
-if [ "${LEGACY}" = "1" ]; then
-	echo -n "Mounting ${POOL} on ${MNT} ..."
-	/bin/mkdir -p ${MNT}
-	if ! /sbin/mount -t zfs ${POOL}/root ${MNT} > /dev/null 2> /dev/null; then
-		echo " error mounting pool/root"
-		exit 1
-	fi
-	for FS in ${FS_LIST}; do
-		/bin/mkdir -p ${MNT}/${FS}
-		if ! /sbin/mount -t zfs ${POOL}/root/${FS} ${MNT}/${FS} > /dev/null 2> /dev/null; then
-			echo " error mounting ${POOL}/root/${FS}"
-			exit 1
-		fi
-	done
-echo " done"
-fi
 
 echo -n "Extracting FreeBSD distribution ..."
 if [ "${DIRECT_TAR}" = "1" ]; then
@@ -337,36 +364,21 @@ echo " done"
 
 echo -n "Writing /boot/loader.conf..."
 echo "zfs_load=\"YES\"" > ${MNT}/boot/loader.conf
-echo "vfs.root.mountfrom=\"zfs:${POOL}/root\"" >> ${MNT}/boot/loader.conf
+echo "vfs.root.mountfrom=\"zfs:${POOL}/ROOT/default\"" >> ${MNT}/boot/loader.conf
 echo " done"
 
 # Write fstab if swap or legacy
 echo -n "Writing /etc/fstab..."
 rm -f ${MNT}/etc/fstab
 touch ${MNT}/etc/fstab
-if [ -n "${FSWAP}" -o "${LEGACY}" = "1" ]; then
-	if [ -n "${FSWAP}" ]; then
-		echo "/dev/${FSWAP} none swap sw 0 0" > ${MNT}/etc/fstab
-	fi
-	if [ "${LEGACY}" = "1" ]; then
-		for FS in ${FS_LIST}; do
-			echo ${POOL}/root/${FS} /${FS} zfs rw 0 0 >> ${MNT}/etc/fstab
-		done
-	fi
+if [ -n "${FSWAP}" ]; then
+	echo "/dev/${FSWAP} none swap sw 0 0" > ${MNT}/etc/fstab
 fi
-if [ "${LEGACY}" != "1" ]; then
-	echo -n "Writing /etc/rc.conf..."
-	echo 'zfs_enable="YES"' >> ${MNT}/etc/rc.conf
-fi
+echo -n "Writing /etc/rc.conf..."
+echo 'zfs_enable="YES"' >> ${MNT}/etc/rc.conf
 echo " done"
 
 echo -n "Copying /boot/zfs/zpool.cache ..."
-if [ -n "${LEGACY}" ]; then
-	for FS in ${FS_LIST}; do
-		/sbin/umount ${MNT}/${FS} > /dev/null 2> /dev/null
-	done
-	/sbin/umount ${MNT} > /dev/null 2> /dev/null
-fi
 if ! /sbin/zpool export ${POOL} > /dev/null 2> /dev/null; then
 	echo " error exporting pool"
 	exit 1
@@ -375,23 +387,9 @@ if ! /sbin/zpool import ${ALTROOT} ${POOL} > /dev/null 2> /dev/null; then
 	echo " error importing pool"
 	exit 1
 fi
-if [ -n "${LEGACY}" ]; then
-	if ! /sbin/mount -t zfs ${POOL}/root ${MNT} > /dev/null 2> /dev/null; then
-		echo " error mounting ${POOL}/root"
-		exit 1
-	fi
-fi
 if ! /bin/cp /boot/zfs/zpool.cache ${MNT}/boot/zfs/ > /dev/null 2> /dev/null; then
 	echo " error copying zpool.cache"
 	exit 1
-fi
-if [ -n "${LEGACY}" ]; then
-	for FS in ${FS_LIST}; do
-		if ! /sbin/mount -t zfs ${POOL}/${FS} ${MNT}/${FS} > /dev/null 2> /dev/null; then
-		echo " error mounting ${POOL}/${FS}"
-		exit 1
-		fi
-	done
 fi
 echo " done"
 
@@ -400,6 +398,13 @@ echo " done"
 if ! /sbin/mount -t devfs devfs ${MNT}/dev; then
 	echo "Error mounting devfs on ${MNT}/dev"
 fi
+
+echo -n "Setting ${POOL}/var/empty to read only ..."
+if ! /sbin/zfs set readonly=on ${POOL}/var/empty > /dev/null 2> /dev/null; then
+	echo " error"
+	exit 1
+fi
+echo " done"
 
 echo ""
 echo "Installation complete."
