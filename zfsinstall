@@ -35,11 +35,11 @@ help() {
 
 while getopts d:t:r:p:s:z:m:V:hcl4 o; do
 	case "$o" in
-        	d) DEVS="$DEVS ${OPTARG##/dev/}" ;;
-        	t) ARCHIVE="${OPTARG}" ;;
-        	p) POOL="${OPTARG}" ;;
-        	s) SWAP="${OPTARG}" ;;
-        	m) MNT="${OPTARG}" ;;
+		d) DEVS="$DEVS ${OPTARG##/dev/}" ;;
+		t) ARCHIVE="${OPTARG}" ;;
+		p) POOL="${OPTARG}" ;;
+		s) SWAP="${OPTARG}" ;;
+		m) MNT="${OPTARG}" ;;
 		r) RAID="${OPTARG}" ;;
 		z) ZPART="${OPTARG}" ;;
 		V) VERSION="${OPTARG}" ;;
@@ -55,8 +55,8 @@ fi
 ZFS_VERSION=`/sbin/sysctl -n vfs.zfs.version.spa 2>/dev/null`
 
 if [ -z "$ZFS_VERSION" ]; then
-        echo "Error: failed to load ZFS module"
-        exit 1
+	echo "Error: failed to load ZFS module"
+	exit 1
 elif [ "$ZFS_VERSION" -lt "13" ]; then
 	echo "Error: ZFS module too old, version 13 or higher required"
 	exit 1
